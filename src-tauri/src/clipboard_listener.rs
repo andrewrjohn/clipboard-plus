@@ -3,14 +3,17 @@ extern crate clipboard_master;
 use chrono::Utc;
 use clipboard_master::{CallbackResult, ClipboardHandler};
 use diesel::prelude::*;
-use std::{io, sync::Mutex};
+use std::{
+    io::{self},
+    sync::Mutex,
+};
 use tauri::{AppHandle, Manager};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
 use crate::{
-    dispatch_clipboard_change, get_source_app, image_to_base64,
+    dispatch_clipboard_change, get_source_app,
     models::{Item, NewItem},
-    schema, AppState,
+    save_image_to_file, schema, AppState,
 };
 
 pub struct ClipboardListener {
@@ -63,36 +66,30 @@ impl ClipboardHandler for ClipboardListener {
         };
 
         if let Ok(img) = self.app_handle.clipboard().read_image() {
-            let image_url = image_to_base64(img.clone());
+            let result = save_image_to_file(self.app_handle.clone(), connection, img);
 
-            if items
-                .filter(image.eq(&image_url))
-                .first::<Item>(connection)
-                .is_ok()
-            {
-                // Move the item to the top of the list
+            if result.already_exists {
                 diesel::update(items)
                     .set(timestamp.eq(Utc::now().timestamp_millis()))
-                    .filter(image.eq(&image_url))
+                    .filter(image.eq(&result.path))
                     .execute(connection)
                     .expect("Failed to update timestamp");
-                return CallbackResult::Next;
+            } else {
+                let new_item = NewItem {
+                    text: None,
+                    image: Some(&result.path),
+                    image_width: Some(result.width as i32),
+                    image_height: Some(result.height as i32),
+                    timestamp: Utc::now().timestamp_millis(),
+                    size_bytes: result.size as i32,
+                    source_app: source.as_deref(),
+                };
+
+                diesel::insert_into(schema::items::table)
+                    .values(&new_item)
+                    .execute(connection)
+                    .expect("Failed to insert clipboard item");
             }
-
-            let new_item = NewItem {
-                text: None,
-                image: Some(&image_url),
-                image_width: Some(img.clone().width() as i32),
-                image_height: Some(img.clone().height() as i32),
-                timestamp: Utc::now().timestamp_millis(),
-                size_bytes: image_url.len() as i32,
-                source_app: source.as_deref(),
-            };
-
-            diesel::insert_into(schema::items::table)
-                .values(&new_item)
-                .execute(connection)
-                .expect("Failed to insert clipboard item");
         }
 
         dispatch_clipboard_change(self.app_handle.clone());

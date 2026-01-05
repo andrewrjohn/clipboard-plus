@@ -1,11 +1,10 @@
 extern crate clipboard_master;
 
-use base64::{engine::general_purpose, Engine};
 use chrono::Utc;
 use diesel::{dsl::sum, prelude::*};
 use enigo::{Enigo, Key, KeyboardControllable};
 use image as image_lib;
-use std::sync::Mutex;
+use std::{path::Path, sync::Mutex};
 
 use tauri::{image::Image, AppHandle, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
@@ -48,24 +47,10 @@ pub fn copy(app_handle: AppHandle, _timestamp: i64) -> i64 {
     } else if let (Some(img), Some(img_width), Some(img_height)) =
         (&item.image, &item.image_width, &item.image_height)
     {
-        // Remove the "data:image/png;base64," prefix if present
-        let base64_data = if let Some(stripped) = img.strip_prefix("data:image/png;base64,") {
-            stripped
-        } else {
-            img.as_str()
-        };
+        let image_bytes = std::fs::read(img).expect("Failed to read image file");
 
-        // Convert base64 to bytes
-        let decoded_bytes = match general_purpose::STANDARD.decode(base64_data) {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                eprintln!("Failed to decode base64 image: {}", e);
-                return 0;
-            }
-        };
-
-        // Decode PNG bytes to get raw RGBA pixel data
-        let img = match image_lib::load_from_memory(&decoded_bytes) {
+        // // Decode PNG bytes to get raw RGBA pixel data
+        let img = match image_lib::load_from_memory(&image_bytes) {
             Ok(img) => img.to_rgba8(),
             Err(e) => {
                 eprintln!("Failed to decode PNG image: {}", e);
@@ -136,6 +121,19 @@ pub fn clean_old_items(app_handle: AppHandle, days: i32) {
 
     let old_items_timestamp = Utc::now().timestamp_millis() - (days as i64 * 24 * 60 * 60 * 1000);
 
+    let old_items = items
+        .filter(timestamp.lt(old_items_timestamp))
+        .load::<Item>(connection)
+        .expect("Failed to load old items");
+
+    for item in old_items {
+        if let Some(img) = &item.image {
+            let image_path = Path::new(img);
+            if image_path.exists() {
+                std::fs::remove_file(image_path).expect("Failed to delete image file");
+            }
+        }
+    }
     diesel::delete(items)
         .filter(timestamp.lt(old_items_timestamp))
         .execute(connection)
@@ -153,6 +151,18 @@ pub fn delete_clipboard_item(app_handle: AppHandle, _timestamp: i64) {
     let state = state.lock().unwrap();
 
     let connection = &mut *state.conn.lock().unwrap();
+
+    let item = items
+        .filter(timestamp.eq(_timestamp))
+        .first::<Item>(connection)
+        .expect("Failed to find item");
+
+    if let Some(img) = &item.image {
+        let image_path = Path::new(img);
+        if image_path.exists() {
+            std::fs::remove_file(image_path).expect("Failed to delete image file");
+        }
+    }
 
     diesel::delete(items)
         .filter(timestamp.eq(_timestamp))

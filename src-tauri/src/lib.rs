@@ -4,7 +4,8 @@
 )]
 
 use crate::clipboard_listener::ClipboardListener;
-use base64::{engine::general_purpose, Engine};
+use crate::models::Item;
+use crate::schema::items;
 use clipboard_master::Master;
 use diesel::prelude::*;
 use diesel::SqliteConnection;
@@ -12,6 +13,8 @@ use image::{DynamicImage, ImageBuffer, ImageFormat};
 use serde::Serialize;
 use specta::Type;
 use specta_typescript::Typescript;
+use std::fs::File;
+use std::io::Write;
 use std::{io::Cursor, path::PathBuf, sync::Mutex};
 use tauri::{
     image::Image,
@@ -58,8 +61,43 @@ fn get_source_app() -> Option<String> {
     return None;
 }
 
-pub fn image_to_base64(image: Image) -> String {
+pub struct SaveImageResult {
+    pub path: String,
+    pub width: u32,
+    pub height: u32,
+    pub size: usize,
+    pub already_exists: bool,
+}
+
+/** Returns `None` if the image already exists */
+pub fn save_image_to_file(
+    app_handle: AppHandle,
+    connection: &mut SqliteConnection,
+    image: Image,
+) -> SaveImageResult {
+    let images_dir = app_handle.path().app_data_dir().unwrap().join("images");
+    std::fs::create_dir_all(&images_dir).unwrap();
+
     let raw_image = image.rgba().to_vec();
+
+    let hash = blake3::hash(&raw_image);
+
+    let image_path = images_dir.join(format!("{}.png", hash.to_string()));
+
+    if image_path.exists() {
+        let item = schema::items::dsl::items
+            .filter(items::image.eq(&image_path.to_string_lossy().to_string()))
+            .first::<Item>(connection)
+            .expect("Failed to find item");
+
+        return SaveImageResult {
+            path: item.image.unwrap(),
+            width: item.image_width.unwrap() as u32,
+            height: item.image_height.unwrap() as u32,
+            size: item.size_bytes as usize,
+            already_exists: true,
+        };
+    }
 
     let img_buffer = ImageBuffer::from_raw(image.width(), image.height(), raw_image.clone())
         .expect("Failed to create image buffer");
@@ -71,11 +109,17 @@ pub fn image_to_base64(image: Image) -> String {
         .write_to(&mut Cursor::new(&mut png_bytes), ImageFormat::Png)
         .unwrap();
 
-    let base64_image = general_purpose::STANDARD.encode(&png_bytes);
+    let mut file = File::create(&image_path).expect("Failed to create file");
+    file.write_all(&png_bytes)
+        .expect("Failed to write image to file");
 
-    let data_uri = format!("data:image/png;base64,{}", base64_image);
-
-    return data_uri;
+    return SaveImageResult {
+        path: image_path.to_string_lossy().to_string(),
+        width: image.width(),
+        height: image.height(),
+        size: png_bytes.len(),
+        already_exists: false,
+    };
 }
 
 /**
@@ -105,7 +149,7 @@ fn get_db_path(app_handle: AppHandle) -> PathBuf {
 }
 
 #[derive(Debug, Serialize, Type)]
-struct SystemData {
+pub struct SystemData {
     pub size_bytes: usize,
     pub db_path: String,
 }

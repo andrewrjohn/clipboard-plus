@@ -1,7 +1,9 @@
 import {
   BroomIcon,
   CheckIcon,
+  DatabaseIcon,
   FolderIcon,
+  ImageIcon,
   LinkIcon,
   TrashIcon,
 } from "@phosphor-icons/react";
@@ -11,6 +13,8 @@ import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import { useEffect, useRef, useState } from "react";
 import { useInView } from "react-intersection-observer";
 import { commands, events, Item, SystemData } from "./bindings";
+import { convertFileSrc } from "@tauri-apps/api/core";
+import { appDataDir } from "@tauri-apps/api/path";
 
 const DAYS_TO_CLEAN = 7;
 
@@ -45,6 +49,8 @@ function App() {
   const [confirmClear, setConfirmClear] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<bigint | null>(null);
   const [confirmCleanOldItems, setConfirmCleanOldItems] = useState(false);
+
+  const [imagesDir, setImagesDir] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -88,7 +94,13 @@ function App() {
     }
   };
 
+  const getImagesDir = async () => {
+    const dir = await appDataDir();
+    setImagesDir(dir + "/images");
+  };
+
   useEffect(() => {
+    getImagesDir();
     refreshData();
 
     events.clipboardChangedEvent.listen(() => {
@@ -170,17 +182,25 @@ function App() {
           <h2 className="font-mono font-light">Clipboard+</h2>
           {systemData ? (
             <div className="text-xs text-neutral-500 flex items-center gap-2">
-              <button
-                onClick={() => revealItemInDir(systemData.db_path)}
-                className="hover:text-neutral-300 flex items-center gap-1"
-              >
-                <FolderIcon size={16} />
-              </button>
-              {" - "}
               <span>
                 {history.length} item{history.length === 1 ? "" : "s"} (
                 {formatBytes(Number(systemData.size_bytes))})
               </span>
+              {" - "}
+              <button
+                onClick={() => revealItemInDir(systemData.db_path)}
+                className="hover:text-neutral-300 flex items-center gap-1"
+                title="Reveal database"
+              >
+                <DatabaseIcon size={16} />
+              </button>{" "}
+              <button
+                onClick={() => revealItemInDir(imagesDir ?? "")}
+                className="hover:text-neutral-300 flex items-center gap-1"
+                title="Reveal images"
+              >
+                <ImageIcon size={16} />
+              </button>
             </div>
           ) : null}
           <div className="flex items-center gap-2">
@@ -324,11 +344,13 @@ const TextRenderer = ({ text }: { text: string }) => {
 const ImageRenderer = ({ image }: { image: string }) => {
   const { inView, ref } = useInView();
 
+  const src = convertFileSrc(image);
+
   return (
     <div ref={ref} className="max-h-[120px]">
       {inView ? (
         <img
-          src={image}
+          src={src}
           alt="Clipboard Image"
           className="object-contain max-h-[120px]"
         />
